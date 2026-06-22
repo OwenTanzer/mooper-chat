@@ -1,18 +1,28 @@
 import os
 import json
-import asyncio
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-ROOM_PASSWORD = os.environ.get("ROOM_PASSWORD", "changeme")
 MAX_HISTORY = 50
 
 app = FastAPI()
-history: deque = deque(maxlen=MAX_HISTORY)
-connections: list[WebSocket] = []
+
+
+@dataclass
+class Room:
+    password: str
+    history: deque = field(default_factory=lambda: deque(maxlen=MAX_HISTORY))
+    connections: list = field(default_factory=list)
+
+
+rooms = {
+    "1": Room(password=os.environ.get("ROOM_PASSWORD", "changeme")),
+    "2": Room(password=os.environ.get("ROOM2_PASSWORD", "changeme2")),
+}
 
 HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -25,7 +35,7 @@ HTML = """<!DOCTYPE html>
   body { font-family: system-ui, sans-serif; background: #f0f0f0; height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; }
   #login { background: #fff; padding: 2rem; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.1); display: flex; flex-direction: column; gap: 1rem; width: 300px; }
   #login h2 { font-size: 1.2rem; color: #333; }
-  #login input { padding: .6rem .8rem; border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
+  #login input, #login select { padding: .6rem .8rem; border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; background: #fff; }
   #login button { padding: .6rem; background: #1a1a2e; color: #fff; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; }
   #login button:hover { background: #16213e; }
   #login .err { color: #c00; font-size: .85rem; display: none; }
@@ -50,6 +60,10 @@ HTML = """<!DOCTYPE html>
 <div id="login">
   <h2>Enter room password</h2>
   <input id="name-input" type="text" placeholder="Your name" autocomplete="off" />
+  <select id="room-select">
+    <option value="1">Room 1</option>
+    <option value="2">Room 2</option>
+  </select>
   <input id="pw-input" type="password" placeholder="Password" autocomplete="off" />
   <button onclick="join()">Join</button>
   <div class="err" id="err-msg">Wrong password.</div>
@@ -72,11 +86,12 @@ let ws, myName;
 
 function join() {
   const name = document.getElementById('name-input').value.trim();
+  const room = document.getElementById('room-select').value;
   const pw   = document.getElementById('pw-input').value;
   if (!name) { document.getElementById('name-input').focus(); return; }
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws?name=${encodeURIComponent(name)}&password=${encodeURIComponent(pw)}`);
+  ws = new WebSocket(`${proto}://${location.host}/ws?name=${encodeURIComponent(name)}&password=${encodeURIComponent(pw)}&room=${room}`);
 
   ws.onopen = () => {};
 
@@ -87,6 +102,7 @@ function join() {
       document.getElementById('login').style.display = 'none';
       document.getElementById('chat').style.display = 'flex';
       document.getElementById('msg-input').focus();
+      document.getElementById('room-label').textContent = 'Room ' + room;
       document.getElementById('conn-status').textContent = 'connected';
       document.getElementById('conn-status').className = 'online';
     } else if (d.type === 'auth_fail') {
@@ -150,10 +166,11 @@ async def index():
 
 
 @app.websocket("/ws")
-async def chat(ws: WebSocket, name: str = "", password: str = ""):
+async def chat(ws: WebSocket, name: str = "", password: str = "", room: str = "1"):
     await ws.accept()
 
-    if password != ROOM_PASSWORD:
+    r = rooms.get(room)
+    if not r or password != r.password:
         await ws.send_text(json.dumps({"type": "auth_fail"}))
         await ws.close()
         return
@@ -163,12 +180,11 @@ async def chat(ws: WebSocket, name: str = "", password: str = ""):
 
     await ws.send_text(json.dumps({"type": "auth_ok"}))
 
-    # replay history
-    for msg in history:
+    for msg in r.history:
         await ws.send_text(json.dumps({"type": "message", **msg}))
 
-    connections.append(ws)
-    await broadcast({"type": "system", "text": f"{name} joined"}, exclude=ws)
+    r.connections.append(ws)
+    await broadcast(r, {"type": "system", "text": f"{name} joined"}, exclude=ws)
 
     try:
         while True:
@@ -182,17 +198,17 @@ async def chat(ws: WebSocket, name: str = "", password: str = ""):
                 "text": text,
                 "time": datetime.now(timezone.utc).strftime("%H:%M"),
             }
-            history.append(msg)
-            await broadcast({"type": "message", **msg})
+            r.history.append(msg)
+            await broadcast(r, {"type": "message", **msg})
     except WebSocketDisconnect:
-        connections.remove(ws)
-        await broadcast({"type": "system", "text": f"{name} left"})
+        r.connections.remove(ws)
+        await broadcast(r, {"type": "system", "text": f"{name} left"})
 
 
-async def broadcast(payload: dict, exclude: WebSocket | None = None):
+async def broadcast(room: Room, payload: dict, exclude: WebSocket | None = None):
     text = json.dumps(payload)
     dead = []
-    for conn in connections:
+    for conn in room.connections:
         if conn is exclude:
             continue
         try:
@@ -200,4 +216,4 @@ async def broadcast(payload: dict, exclude: WebSocket | None = None):
         except Exception:
             dead.append(conn)
     for conn in dead:
-        connections.remove(conn)
+        room.connections.remove(conn)

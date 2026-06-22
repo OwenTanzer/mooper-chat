@@ -12,7 +12,7 @@ Messages appear as chat bubbles. Send with the **Send** button or press **Enter*
 
 ```bash
 pip install -r requirements.txt
-ROOM_PASSWORD=yourpassword uvicorn main:app --reload
+ROOM_PASSWORD=yourpassword ROOM2_PASSWORD=yourpassword2 uvicorn main:app --reload
 ```
 
 Then open `http://localhost:8000`.
@@ -25,7 +25,7 @@ The `railway.toml` configures the start command automatically:
 uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
-Set the `ROOM_PASSWORD` environment variable in the Railway dashboard. If unset, it defaults to `changeme`.
+Set `ROOM_PASSWORD` and `ROOM2_PASSWORD` as environment variables in the Railway dashboard. If unset, they default to `changeme` and `changeme2`.
 
 ## How it works
 
